@@ -43,13 +43,23 @@ class ViewController: UIViewController {
   
   override func viewDidLoad() {
     super.viewDidLoad()
-    // Do any additional setup after loading the view, typically from a nib.
-
     style()
+    
+    mapButton.rx.tap
+      .subscribe(onNext: { _ in
+        self.mapView.isHidden = !self.mapView.isHidden
+      })
+      .disposed(by: bag)
+    
+    mapView.rx.setDelegate(self)
+      .disposed(by: bag)
 
     let searchInput = searchCityName.rx.controlEvent(.editingDidEndOnExit).asObservable()
       .map { self.searchCityName.text ?? ""}
       .filter { ($0).count > 0 }
+      .do(onNext: { _ in
+        self.view.endEditing(true)
+      })
     
     let textSearch = searchInput.flatMap { (name) in
       return ApiController.shared.currentWeather(city: name)
@@ -80,7 +90,16 @@ class ViewController: UIViewController {
         .catchErrorJustReturn(ApiController.Weather.dummy)
     }
     
-    let search = Observable.from([textSearch,geoSearch])
+    let mapInput = mapView.rx.regionDidChangeAnimated
+      .skip(1)
+      .map { _ in self.mapView.centerCoordinate}
+    
+    let mapSearch = mapInput.flatMap { (location) in
+      ApiController.shared.currentWeather(lat: location.latitude, lon: location.longitude)
+        .catchErrorJustReturn(ApiController.Weather.dummy)
+    }
+    
+    let search = Observable.from([textSearch,geoSearch, mapSearch])
         .merge()
         .asDriver(onErrorJustReturn: ApiController.Weather.dummy)
     
@@ -103,6 +122,7 @@ class ViewController: UIViewController {
     let running = Observable.from([
       searchInput.map({_ in true}),
       geoInput.map({ _ in true}),
+      mapInput.map { _ in true},
       search.map({_ in false}).asObservable()
       ])
       .merge()
@@ -127,6 +147,18 @@ class ViewController: UIViewController {
       .drive(cityNameLabel.rx.isHidden)
       .disposed(by: bag)
     
+    search.map { [$0.overlay()]}
+      .drive(mapView.rx.overlays)
+      .disposed(by: bag)
+    
+    let centerInput = Observable.from([textSearch,geoSearch])
+      .merge()
+      .map {$0.coordinate}
+      .asDriver(onErrorJustReturn: CLLocationCoordinate2D(latitude: 0, longitude: 0))
+    
+    centerInput
+      .drive(mapView.rx.centerMap)
+      .disposed(by: bag)
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -157,6 +189,18 @@ class ViewController: UIViewController {
     humidityLabel.textColor = UIColor.cream
     iconLabel.textColor = UIColor.cream
     cityNameLabel.textColor = UIColor.cream
+  }
+}
+
+extension ViewController: MKMapViewDelegate {
+  func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) ->
+    MKOverlayRenderer {
+      if let overlay = overlay as? ApiController.Weather.Overlay {
+        let overlayView = ApiController.Weather.OverlayView(overlay:
+          overlay, overlayIcon: overlay.icon)
+        return overlayView
+      }
+      return MKOverlayRenderer()
   }
 }
 
